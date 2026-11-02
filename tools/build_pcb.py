@@ -1,0 +1,937 @@
+"""Build card.kicad_pcb from design.py.
+
+Run with KiCad's Python:  "C:\\Program Files\\KiCad\\9.0\\bin\\python.exe" build_pcb.py
+
+Coordinates in this file are "front" millimetres: x to the right and y down, origin at the top-left
+corner of the card as seen from the LED side. Back-side parts are flipped, so on the back view they
+appear mirrored (x -> 85.6 - x).
+"""
+import math, os, sys
+import numpy as np
+import pcbnew
+from pcbnew import VECTOR2I, FromMM, ToMM
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import design
+from design import PARTS, MATRIX_COLS, MATRIX_ROWS, led_nets, led_ref
+from sexp import load, find, first, val
+import gen_sch
+import router
+
+PROJ = os.path.dirname(HERE)
+KICAD_FP = r'C:\Program Files\KiCad\9.0\share\kicad\footprints'
+POWER_NETS = {'GND', '+3V3', 'VBUS', '+1V1'}
+OX, OY = 100.0, 100.0
+BW, BH, BR = 85.6, 54.0, 2.6
+
+# ------------------------------------------------------------------ placement plan
+# matrix pitch and position from the approved render (02 "srez")
+MX, MY, MP = 43.6, 6.4, 2.4
+U1_AT = (23.6, 31.0)            # RP2350A centre, back side; the whole RPi core moves with it
+FRONT = {                       # ref: (x, y, rot)
+    'J1': (2.47, 10.5, 270),    # opening flush-ish with the left edge, body overhangs ~1.2 mm
+    'SW1': (77.6, 33.0, 0),
+    'U6': (70.6, 33.0, 0),
+}
+BACK = {                        # ref: (x, y, rot) in front coordinates, placed then flipped
+    'U4': (9.2, 10.5, 90),
+    'R11': (9.6, 6.4, 0),
+    'R12': (9.6, 14.6, 0),
+    'U2': (13.4, 17.6, 0),
+    'C1': (10.0, 17.6, 90),
+    'C5': (16.8, 17.6, 90),
+    'C19': (17.0, 13.6, 0),
+    'R17': (12.6, 28.0, 90),
+    'R18': (13.8, 28.0, 90),
+    'C26': (11.4, 28.0, 90),
+    'U5': (60.4, 35.0, 0),
+    'C21': (63.95, 33.35, 180),
+    'C22': (63.95, 34.4, 180),
+    'R15': (63.95, 35.75, 180),
+    'R14': (55.6, 33.5, 0),
+    'R13': (55.6, 35.6, 0),
+    'C24': (55.6, 37.2, 0),
+    'C23': (55.6, 38.2, 0),
+    'U7': (37.0, 41.0, 0),
+    'C25': (34.0, 37.6, 0),
+    'BZ1': (8.4, 45.0, 0),
+    'Q1': (16.8, 41.6, 0),
+    'D145': (15.6, 45.6, 90),
+    'R19': (17.6, 38.2, 0),
+    'R20': (15.6, 38.2, 0),
+    'TP1': (18.6, 49.6, 0),
+    'TP2': (24.1, 49.6, 0),
+    'TP3': (29.6, 49.6, 0),
+}
+CORE_REFS = ['U1', 'L1', 'C6', 'C7', 'C9', 'R3', 'C8', 'C10', 'C11', 'C12', 'C13', 'C14', 'C15', 'C16',
+             'C17', 'C18', 'R2', 'C3', 'C4', 'X1', 'R7', 'R8', 'U3', 'C2', 'R6', 'R10']
+REF_NETS = {'+1V1': '+1V1', '+3V3': '+3V3', 'GND': 'GND', '/VREG_AVDD': 'VREG_AVDD', '/VREG_LX': 'VREG_LX',
+            '/XIN': 'XIN', '/XOUT': 'XOUT', 'Net-(C4-Pad1)': 'XOUT_R', 'Net-(U1-USB_DP)': 'USB_DP_MCU',
+            'Net-(U1-USB_DM)': 'USB_DN_MCU', '/QSPI_SS': 'QSPI_SS', '/FLASH_SS': 'FLASH_SS',
+            '/QSPI_SCLK': 'QSPI_SCLK', '/QSPI_SD0': 'QSPI_SD0', '/QSPI_SD1': 'QSPI_SD1', '/QSPI_SD2': 'QSPI_SD2',
+            '/QSPI_SD3': 'QSPI_SD3',
+            # fan-outs of the pins we use: copied up to the edge of the core, the router carries them on
+            '/GPIO4': 'SDA', '/GPIO5': 'SCL', '/GPIO8': 'EE_WP', '/GPIO22': 'BUZZ', '/GPIO26_ADC0': 'LUX',
+            '/GPIO27_ADC1': 'LUX_RANGE'}
+ESCAPES = {'SDA', 'SCL', 'EE_WP', 'BUZZ', 'LUX', 'LUX_RANGE'}
+# nets the reference layout connects completely inside the core (+3V3 and GND reach in from outside)
+CORE_NETS = {'+1V1', 'VREG_AVDD', 'VREG_LX', 'XIN', 'XOUT', 'XOUT_R', 'USB_DP_MCU', 'USB_DN_MCU', 'QSPI_SS',
+             'FLASH_SS', 'QSPI_SCLK', 'QSPI_SD0', 'QSPI_SD1', 'QSPI_SD2', 'QSPI_SD3'}
+# reference-relative box (mm from U1 centre, reference orientation) that the core copy may occupy
+CORE_BOX = (-14.5, -20.0, 8.6, 15.0)
+CORE_3V3_POUR = [(-9.6, -20.2), (9.0, -20.2), (9.0, 7.8), (-9.6, 7.8)]
+
+
+def V(x, y):
+    return VECTOR2I(FromMM(OX + x), FromMM(OY + y))
+
+
+def mm(v):
+    return ToMM(v.x) - OX, ToMM(v.y) - OY
+
+
+def lset(*layers):
+    ls = pcbnew.LSET()
+    for l in layers:
+        if hasattr(ls, 'AddLayer'):
+            ls.AddLayer(l)
+        else:
+            ls.set(l)
+    return ls
+
+
+class Builder:
+    def __init__(self):
+        self.board = pcbnew.BOARD()
+        b = self.board
+        b.SetCopperLayerCount(4)
+        ds = b.GetDesignSettings()
+        ds.SetBoardThickness(FromMM(1.0))
+        try:
+            nc = ds.m_NetSettings.GetDefaultNetclass()
+            nc.SetClearance(FromMM(0.14))
+            nc.SetTrackWidth(FromMM(0.2))
+            nc.SetViaDiameter(FromMM(0.5))
+            nc.SetViaDrill(FromMM(0.25))
+        except Exception as e:
+            print('netclass setup skipped:', e)
+        self.nets = {}
+        for name in sorted(design.all_nets()):
+            # schematic local labels become "/NAME" nets, power symbols keep their bare names
+            ni = pcbnew.NETINFO_ITEM(b, name if name in POWER_NETS else '/' + name)
+            b.Add(ni)
+            self.nets[name] = ni
+        self.fps = {}
+
+    @classmethod
+    def load(cls, path):
+        """Reopen a saved board: the zone filler crashes on boards that only live in memory."""
+        self = cls.__new__(cls)
+        self.board = pcbnew.LoadBoard(path)
+        self.nets = {n: self.board.FindNet(n if n in POWER_NETS else '/' + n) for n in design.all_nets()}
+        self.fps = {fp.GetReference(): fp for fp in self.board.GetFootprints()}
+        return self
+
+    def net(self, name):
+        return self.nets[name]
+
+    # ----------------------------------------------------------------- footprints
+    def load_fp(self, ref):
+        p = PARTS[ref]
+        lib, name = p['footprint'].split(':')
+        path = os.path.join(PROJ, 'card.pretty') if lib == 'card' else os.path.join(KICAD_FP, lib + '.pretty')
+        fp = pcbnew.FootprintLoad(path, name)
+        assert fp is not None, p['footprint']
+        fp.SetFPID(pcbnew.LIB_ID(lib, name))
+        if name.endswith('_ThermalVias'):
+            # the variant also carries an exposed-pad copy on the far side; on a back-side part that
+            # copy would be a bare square on the face of the card
+            for pad in list(fp.Pads()):
+                if pad.IsOnLayer(pcbnew.B_Cu) and not pad.IsOnLayer(pcbnew.F_Cu) and not pad.HasHole():
+                    fp.Remove(pad)
+        fp.SetReference(ref)
+        fp.SetValue(p['value'])
+        if p['lcsc']:
+            f = pcbnew.PCB_FIELD(fp, fp.GetNextFieldId(), 'LCSC')
+            f.SetText(p['lcsc'])
+            f.SetVisible(False)
+            f.SetLayer(pcbnew.F_Fab)
+            fp.AddField(f)
+        fp.SetPath(pcbnew.KIID_PATH('/' + gen_sch.symbol_uuid(ref)))
+        fp.SetSheetname('/')
+        fp.SetSheetfile('card.kicad_sch')
+        for pad in fp.Pads():
+            n = p['nets'].get(pad.GetNumber())
+            if n:
+                pad.SetNet(self.net(n))
+        fp.Reference().SetVisible(False)   # designators stay off the card; "U7" is set in Inter Tight
+        fp.Value().SetVisible(False)
+        self.board.Add(fp)
+        self.fps[ref] = fp
+        return fp
+
+    def place(self, ref, x, y, rot, back):
+        fp = self.fps.get(ref) or self.load_fp(ref)
+        fp.SetPosition(V(x, y))
+        fp.SetOrientationDegrees(rot)
+        if back:
+            fp.Flip(fp.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+        else:
+            # the face of the card carries only the name, the screen, the button, the sensor and usb-c
+            for item in list(fp.GraphicalItems()):
+                if item.GetLayer() == pcbnew.F_SilkS and PARTS[ref]['footprint'] != 'card:LED_0603_KT':
+                    fp.Remove(item)
+        return fp
+
+    def place_all(self):
+        for ref, (x, y, rot) in FRONT.items():
+            self.place(ref, x, y, rot, back=False)
+        for r in range(MATRIX_ROWS):
+            for c in range(MATRIX_COLS):
+                self.place(led_ref(r, c), MX + MP * c, MY + MP * r, 0, back=False)
+        for ref, (x, y, rot) in BACK.items():
+            self.place(ref, x, y, rot, back=True)
+        missing = set(PARTS) - set(self.fps) - set(CORE_REFS)
+        assert not missing, missing
+
+    # ----------------------------------------------------------------- outline
+    def outline(self):
+        b = self.board
+        w = FromMM(0.1)
+        r = BR
+        segs = [((r, 0), (BW - r, 0)), ((BW, r), (BW, BH - r)), ((BW - r, BH), (r, BH)), ((0, BH - r), (0, r))]
+        for (a, c) in segs:
+            s = pcbnew.PCB_SHAPE(b)
+            s.SetShape(pcbnew.SHAPE_T_SEGMENT)
+            s.SetStart(V(*a)); s.SetEnd(V(*c))
+            s.SetLayer(pcbnew.Edge_Cuts); s.SetWidth(w)
+            b.Add(s)
+        for (cx, cy, sx, sy) in ((BW - r, r, BW - r, 0), (BW - r, BH - r, BW, BH - r), (r, BH - r, r, BH), (r, r, 0, r)):
+            s = pcbnew.PCB_SHAPE(b)
+            s.SetShape(pcbnew.SHAPE_T_ARC)
+            s.SetCenter(V(cx, cy)); s.SetStart(V(sx, sy))
+            s.SetArcAngleAndEnd(pcbnew.EDA_ANGLE(90, pcbnew.DEGREES_T))
+            s.SetLayer(pcbnew.Edge_Cuts); s.SetWidth(w)
+            b.Add(s)
+
+    # ----------------------------------------------------------------- copper helpers
+    def track(self, net, layer, pts, w=0.2):
+        out = []
+        for a, c in zip(pts, pts[1:]):
+            if a == c:
+                continue
+            t = pcbnew.PCB_TRACK(self.board)
+            t.SetStart(V(*a)); t.SetEnd(V(*c))
+            t.SetWidth(FromMM(w)); t.SetLayer(layer); t.SetNet(self.net(net))
+            self.board.Add(t)
+            out.append(t)
+        return out
+
+    def via(self, net, x, y, d=0.45, drill=0.25):
+        v = pcbnew.PCB_VIA(self.board)
+        v.SetPosition(V(x, y))
+        v.SetViaType(pcbnew.VIATYPE_THROUGH)
+        v.SetLayerPair(pcbnew.F_Cu, pcbnew.B_Cu)
+        v.SetWidth(FromMM(d)); v.SetDrill(FromMM(drill))
+        v.SetNet(self.net(net))
+        self.board.Add(v)
+        return v
+
+    def zone(self, net, layer, pts, priority=0, clearance=0.2, min_w=0.2, connect='thermal', gap=0.3, spoke=0.3,
+             name=''):
+        z = pcbnew.ZONE(self.board)
+        z.SetLayer(layer)
+        if net:
+            z.SetNet(self.net(net))
+        ol = z.Outline()
+        ol.NewOutline()
+        for x, y in pts:
+            ol.Append(FromMM(OX + x), FromMM(OY + y))
+        z.SetAssignedPriority(priority)
+        z.SetLocalClearance(FromMM(clearance))
+        z.SetMinThickness(FromMM(min_w))
+        z.SetPadConnection(pcbnew.ZONE_CONNECTION_FULL if connect == 'full' else pcbnew.ZONE_CONNECTION_THERMAL)
+        z.SetThermalReliefGap(FromMM(gap))
+        z.SetThermalReliefSpokeWidth(FromMM(spoke))
+        z.SetIslandRemovalMode(pcbnew.ISLAND_REMOVAL_MODE_ALWAYS)
+        if name:
+            z.SetZoneName(name)
+        self.board.Add(z)
+        return z
+
+    # ----------------------------------------------------------------- RPi core
+    def core(self):
+        """Copy the Raspberry Pi RP2350A minimal design core onto the back, mirrored around U1."""
+        ref = load(os.path.join(HERE, 'ref', 'RPI-RP2350A-MINIMAL_R4-S1.kicad_pcb'))
+        ref_nets = {n[1]: (n[2] if len(n) > 2 else '') for n in find(ref, 'net')}
+        ux, uy = U1_AT
+        uxa, uya = OX + ux, OY + uy
+
+        def T(x, y):                 # reference absolute -> our front coordinates
+            return ux - (float(x) - 100.0), uy + (float(y) - 100.0)
+
+        def inbox(x, y):
+            dx, dy = float(x) - 100.0, float(y) - 100.0
+            return CORE_BOX[0] <= dx <= CORE_BOX[2] and CORE_BOX[1] <= dy <= CORE_BOX[3]
+
+        def netof(item):
+            n = first(item, 'net')
+            if n is None:
+                return None
+            return REF_NETS.get(ref_nets.get(n[1], n[1]))
+
+        by_ref = {}
+        for fp in find(ref, 'footprint'):
+            r = next((p[2] for p in find(fp, 'property') if p[1] == 'Reference'), None)
+            by_ref[r] = fp
+        for r in CORE_REFS:
+            at = first(by_ref[r], 'at')
+            x, y = float(at[1]) - 100.0, float(at[2]) - 100.0
+            rot = float(at[3]) if len(at) > 3 else 0.0
+            fp = self.fps.get(r) or self.load_fp(r)
+            fp.SetPosition(V(ux + x, uy + y))
+            fp.SetOrientationDegrees(rot)
+            fp.Flip(VECTOR2I(FromMM(uxa), FromMM(uya)), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+
+        layer_map = {'F.Cu': pcbnew.B_Cu, 'B.Cu': pcbnew.In1_Cu}
+        added = []
+        for s in find(ref, 'segment'):
+            net = netof(s)
+            lay = val(s, 'layer')
+            if not net or lay not in layer_map:
+                continue
+            st, en = first(s, 'start'), first(s, 'end')
+            if not (inbox(st[1], st[2]) and inbox(en[1], en[2])):
+                continue
+            added += self.track(net, layer_map[lay], [T(st[1], st[2]), T(en[1], en[2])], float(val(s, 'width')))
+        for v in find(ref, 'via'):
+            net = netof(v)
+            at = first(v, 'at')
+            if not net or not inbox(at[1], at[2]):
+                continue
+            added.append(self.via(net, *T(at[1], at[2]), d=float(val(v, 'size')), drill=float(val(v, 'drill'))))
+
+        # zones on the reference top layer become zones on our back layer; their priorities move up by
+        # one so that the clipped +3V3 pour can sit above the general back-side GND pour
+        zones = []
+        for z in find(ref, 'zone'):
+            if val(z, 'layer') != 'F.Cu':
+                continue
+            net = netof(z)
+            pts = [(float(p[1]), float(p[2])) for p in find(first(first(z, 'polygon'), 'pts'), 'xy')]
+            big = max(abs(p[0] - 100) for p in pts) > 20
+            if net is None or (big and net != '+3V3'):
+                continue
+            cp = first(z, 'connect_pads')
+            full = cp is not None and 'yes' in cp[1:]
+            clr = float(val(cp, 'clearance', default=0.2)) if cp is not None else 0.2
+            fill = first(z, 'fill')
+            gap = float(val(fill, 'thermal_gap', default=0.3))
+            spoke = float(val(fill, 'thermal_bridge_width', default=0.3))
+            prio = int(val(z, 'priority', default=0)) + 1
+            if big:
+                pts_f = [(ux - x, uy + y) for x, y in CORE_3V3_POUR]
+                prio = 1
+            else:
+                pts_f = [T(x, y) for x, y in pts]
+            zones.append(self.zone(net, pcbnew.B_Cu, pts_f, priority=prio, clearance=clr,
+                                   min_w=float(val(z, 'min_thickness', default=0.2)),
+                                   connect='full' if full else 'thermal', gap=gap, spoke=spoke,
+                                   name='pour +3V3 core' if big else f'core {net}'))
+        self.prune(added, zones)
+        # LX cut-out on the plane next to the regulator (RP2350 datasheet 6.3.8.1)
+        lx = [T(100 + x, 100 + y) for x, y in ((0.9, -8.3), (3.3, -8.3), (3.3, -2.9), (0.9, -2.9))]
+        z = pcbnew.ZONE(self.board)
+        z.SetIsRuleArea(True)
+        z.SetLayerSet(lset(pcbnew.In2_Cu))
+        z.SetDoNotAllowCopperPour(True); z.SetDoNotAllowTracks(True); z.SetDoNotAllowVias(False)
+        z.SetDoNotAllowPads(False); z.SetDoNotAllowFootprints(False)
+        ol = z.Outline(); ol.NewOutline()
+        for x, y in lx:
+            ol.Append(FromMM(OX + x), FromMM(OY + y))
+        z.SetZoneName('no copper under VREG_LX')
+        self.board.Add(z)
+
+    def prune(self, items, zones=()):
+        """Drop copied track ends that no longer land on anything (pads of parts we did not take).
+        Fan-outs of the pins we use are kept even though they end in the open: the router continues them."""
+        b = self.board
+        keep = {self.nets[n].GetNetCode() for n in ESCAPES}
+        tracks = [t for t in items if t.GetClass() == 'PCB_TRACK']
+        vias = [v for v in items if v.GetClass() == 'PCB_VIA']
+        pads = [p for fp in self.fps.values() for p in fp.Pads()]
+        changed = True
+        while changed:
+            changed = False
+            for t in list(tracks):
+                if t.GetNetCode() in keep:
+                    continue
+                for pt in (t.GetStart(), t.GetEnd()):
+                    ok = any(p.GetNetCode() == t.GetNetCode() and p.IsOnLayer(t.GetLayer()) and p.HitTest(pt)
+                             for p in pads)
+                    ok = ok or any(z.GetNetCode() == t.GetNetCode() and z.IsOnLayer(t.GetLayer())
+                                   and z.Outline().Contains(pt) for z in zones)
+                    ok = ok or any(v.GetNetCode() == t.GetNetCode() and v.HitTest(pt) for v in vias)
+                    ok = ok or any(o is not t and o.GetNetCode() == t.GetNetCode() and o.GetLayer() == t.GetLayer()
+                                   and o.HitTest(pt, FromMM(0.01)) for o in tracks)
+                    if not ok:
+                        b.Remove(t); tracks.remove(t); changed = True
+                        break
+        for v in list(vias):
+            touch = any(t.GetNetCode() == v.GetNetCode() and (v.HitTest(t.GetStart()) or v.HitTest(t.GetEnd()))
+                        for t in tracks)
+            touch = touch or any(p.GetNetCode() == v.GetNetCode() and p.HitTest(v.GetPosition()) for p in pads)
+            if not touch and v.GetNetCode() != self.net('GND').GetNetCode():
+                b.Remove(v); vias.remove(v)
+
+    # ----------------------------------------------------------------- LED matrix
+    def matrix(self):
+        """Cathode rows on the front, anode columns on In1, one exit per driver pin under the matrix."""
+        X = lambda c: MX + MP * c
+        Y = lambda r: MY + MP * r
+        ROW, AVIA, KVIA, PAD = -1.75, -0.775, -1.075, 0.7
+        self.matrix_exits = {}
+        y_exit = Y(MATRIX_ROWS - 1) + 1.6
+        for h, pre in ((0, 'CA'), (1, 'CB')):
+            c0 = 8 * h
+            for r in range(MATRIX_ROWS):
+                k = f'{pre}{r + 1}'
+                # the last row also collects the anode of diagonal LED (7,7), which sits right of column 7
+                x_end = X(c0 + 7) + PAD if r == MATRIX_ROWS - 1 else X(c0 + 7) - PAD
+                self.track(k, pcbnew.F_Cu, [(X(c0) - PAD, Y(r) + ROW), (x_end, Y(r) + ROW)])
+                for j in range(8):
+                    c = c0 + j
+                    self.track(k, pcbnew.F_Cu, [(X(c) - PAD, Y(r) + ROW), (X(c) - PAD, Y(r))])
+                    kk, a = led_nets(r, c)
+                    if j == r:
+                        # diagonal LED: its anode is the next row's cathode line, right below it
+                        self.track(a, pcbnew.F_Cu, [(X(c) + PAD, Y(r)), (X(c) + PAD, Y(r + 1) + ROW)])
+                        if r > 0:
+                            self.via(a, X(c) + PAD, Y(r) + AVIA)
+                            self.track(a, pcbnew.F_Cu, [(X(c) + PAD, Y(r)), (X(c) + PAD, Y(r) + AVIA)])
+                    else:
+                        self.via(a, X(c) + PAD, Y(r) + AVIA)
+                        self.track(a, pcbnew.F_Cu, [(X(c) + PAD, Y(r)), (X(c) + PAD, Y(r) + AVIA)])
+            for j in range(8):
+                c = c0 + j
+                if j >= 1:   # upper part of the column, rows 0..j, is pin j+2: joined through the diagonal LED
+                    self.track(f'{pre}{j + 2}', pcbnew.In1_Cu, [(X(c) + PAD, Y(0) + AVIA), (X(c) + PAD, Y(j) + AVIA)])
+                lower = f'{pre}{j + 1}'   # rows j+1..8 are pin j+1, the same pin as row j's cathodes
+                self.track(lower, pcbnew.In1_Cu, [(X(c) + PAD, Y(j + 1) + AVIA), (X(c) + PAD, y_exit)])
+                self.via(lower, X(c) - PAD, Y(j) + KVIA)
+                self.track(lower, pcbnew.In1_Cu, [(X(c) - PAD, Y(j) + KVIA), (X(c) - PAD, Y(j + 1) + AVIA),
+                                                  (X(c) + PAD, Y(j + 1) + AVIA)])
+                self.matrix_exits[lower] = (X(c) + PAD, y_exit)
+            # pin 9 = row 8 cathodes plus the upper part of column 7 on In1. It leaves to the right of
+            # column 7, so the 18 exits reach the driver in the same order as its pins (no crossings).
+            k9 = f'{pre}9'
+            c = c0 + 7
+            yj = Y(7) + AVIA - 0.9
+            self.track(k9, pcbnew.In1_Cu, [(X(c) + PAD, yj), (X(c) + PAD + 1.2, yj), (X(c) + PAD + 1.2, y_exit)])
+            self.matrix_exits[k9] = (X(c) + PAD + 1.2, y_exit)
+        # every exit drops to the back layer right under the matrix, where there is room for vias
+        for net, (x, y) in self.matrix_exits.items():
+            self.via(net, x, y)
+
+    def prerouted(self):
+        """Hand-placed copper in the few spots a grid router handles badly."""
+        F, B = pcbnew.F_Cu, pcbnew.B_Cu
+        # USB-C: D+ pads joined round the inner ends of the pads (under the shell), D- round the outer ends
+        self.track('USB_DP', F, [(6.0, 10.25), (5.3, 10.25), (5.3, 11.25), (6.0, 11.25)], 0.2)
+        self.track('USB_DN', F, [(7.0, 9.75), (7.75, 9.75), (7.75, 10.75), (7.0, 10.75)], 0.2)
+        # button: both halves of each contact joined under the cap, vias hidden by the switch body
+        self.track('BOOT', F, [(74.6, 31.125), (80.6, 31.125)], 0.25)
+        self.track('BOOT', F, [(77.6, 31.125), (77.6, 31.9)], 0.25)
+        self.via('BOOT', 77.6, 31.9)
+        self.track('GND', F, [(74.6, 34.875), (80.6, 34.875)], 0.25)
+        self.track('GND', F, [(77.6, 34.875), (77.6, 34.1)], 0.25)
+        self.via('GND', 77.6, 34.1)
+        # light sensor: one via under each pad
+        for net, x in (('LUX', 69.8), ('+3V3', 71.4)):
+            self.track(net, F, [(x, 33.0), (x, 34.35)], 0.25)
+            self.via(net, x, 34.35)
+        # LED driver: SDB tied to VCC, both GND pins into the exposed pad, VCC straight to its 100 nF
+        u5 = self.fps['U5']
+        # several pads share number 29 (the exposed pad and its vias); take the plain SMD one
+        pad = {p.GetNumber(): mm(p.GetPosition()) for p in u5.Pads() if not p.HasHole()}
+        (x2, y2), (x3, y3) = pad['2'], pad['3']
+        self.track('VBUS', B, [(x2, y2), (x2 + 0.4, y2), (x3 + 0.4, y3), (x3, y3)], 0.2)
+        c22 = {p.GetNumber(): mm(p.GetPosition()) for p in self.fps['C22'].Pads()}
+        c21 = {p.GetNumber(): mm(p.GetPosition()) for p in self.fps['C21'].Pads()}
+        self.track('VBUS', B, [(x2 + 0.4, y2), c22['1']], 0.25)
+        self.track('VBUS', B, [c22['1'], c21['1']], 0.3)
+        self.track('GND', B, [c22['2'], c21['2']], 0.3)
+        ex, ey = pad['29']
+        for n in ('5', '18'):
+            px, py = pad[n]
+            self.track('GND', B, [(px, py), (ex + (0.8 if px > ex else -0.8), py)], 0.2)
+        r15 = {p.GetNumber(): mm(p.GetPosition()) for p in self.fps['R15'].Pads()}
+        x6, y6 = pad['6']
+        self.track('LED_REXT', B, [(x6, y6), r15['1']], 0.2)
+
+    # ----------------------------------------------------------------- routing
+    def net_items(self, nc):
+        items = []
+        for fp in self.board.GetFootprints():
+            items += [p for p in fp.Pads() if p.GetNetCode() == nc]
+        items += [t for t in self.board.GetTracks() if t.GetNetCode() == nc]
+        items += [z for z in self.board.Zones() if not z.GetIsRuleArea() and z.GetNetCode() == nc]
+        return items
+
+    @staticmethod
+    def anchors(group):
+        pts = []
+        for it in group:
+            cls = it.GetClass()
+            if cls in ('PAD', 'PCB_VIA'):
+                pts.append(mm(it.GetPosition()))
+            elif cls == 'PCB_TRACK':
+                pts += [mm(it.GetStart()), mm(it.GetEnd())]
+            elif cls == 'ZONE':
+                ol = it.Outline()
+                for i in range(ol.OutlineCount()):
+                    o = ol.Outline(i)
+                    pts += [mm(o.CPoint(j)) for j in range(o.PointCount())]
+        return pts
+
+    def front_allow(self, net):
+        m = np.zeros((router.NY, router.NX), dtype=bool)
+        nc = self.nets[net].GetNetCode()
+
+        def rect(x0, y0, x1, y1):
+            a = router.cell(x0, y0); c = router.cell(x1, y1)
+            m[max(a[0], 0):c[0], max(a[1], 0):c[1]] = True
+
+        for ref in ('J1',):          # button and sensor already have their vias
+            fp = self.fps[ref]
+            if not any(p.GetNetCode() == nc for p in fp.Pads()):
+                continue
+            if ref == 'J1':
+                rect(4.3, 6.5, 8.6, 14.5)
+            elif ref == 'SW1':
+                rect(73.8, 30.3, 81.4, 35.7)
+            else:
+                rect(68.9, 31.9, 72.3, 34.1)
+        return m
+
+    def snap(self, group, p):
+        layer, iy, ix = p
+        x, y = router.pos(iy, ix)
+        for it in group:
+            if it.GetClass() == 'PAD' and it.IsOnLayer(layer) and it.HitTest(V(x, y)):
+                return mm(it.GetPosition())
+            if it.GetClass() == 'PCB_VIA' and it.HitTest(V(x, y)):
+                return mm(it.GetPosition())
+        return None
+
+    def route_all(self, tasks, log=print):
+        R = router.Router(self.board, self.nets, widths=sorted({w for _, w in tasks}))
+        self.R = R
+        self.core_patched = []
+        # vias stay out from under the small "keetsta.me" on the face
+        R.keep_out_vias(10.0, 6.4, 23.8, 10.8)
+        # keep signals away from the regulator switching node (RP2350 datasheet 6.3.8.1)
+        for l in (pcbnew.F_Cu, pcbnew.In1_Cu):
+            R.keep_out(l, 20.1, 22.5, 22.9, 28.3)
+        pour = np.zeros((router.NY, router.NX), dtype=bool)
+        xs = [U1_AT[0] - x for x, _ in CORE_3V3_POUR]; ys = [U1_AT[1] + y for _, y in CORE_3V3_POUR]
+        a = router.cell(min(xs), min(ys)); c = router.cell(max(xs), max(ys))
+        pour[a[0]:c[0], a[1]:c[1]] = True
+        core = np.zeros_like(pour)
+        a = router.cell(13.8, 10.6); c = router.cell(38.6, 46.6)
+        core[a[0]:c[0], a[1]:c[1]] = True
+        core_codes = {p.GetNetCode() for r in CORE_REFS for p in self.fps[r].Pads()}
+        failed = []
+        for net, width in tasks:
+            nc = self.nets[net].GetNetCode()
+            # tracks of other nets may cross the core's +3V3 pour on the back, but at a price, so the
+            # pour stays in one piece and fan-outs prefer to dive to In1
+            soft = {pcbnew.B_Cu: pour.copy()} if net not in ('+3V3', 'GND') else {}
+            block = {}
+            if nc not in core_codes:
+                # nets that have no business near the RP2350 keep out of its escape corridors
+                soft[pcbnew.In1_Cu] = core
+                soft[pcbnew.B_Cu] = soft.get(pcbnew.B_Cu, np.zeros_like(core)) | core
+            if net[:2] in ('CA', 'CB'):
+                # the 18 matrix lines arrive at the driver on the back layer, without vias at its pins
+                u5 = np.zeros_like(core)
+                a = router.cell(53.5, 30.6); c = router.cell(68.5, 41.6)
+                u5[a[0]:c[0], a[1]:c[1]] = True
+                soft[pcbnew.In1_Cu] = soft.get(pcbnew.In1_Cu, np.zeros_like(core)) | u5
+            if net == 'VBUS':
+                vb = np.zeros_like(core)
+                a = router.cell(16.0, 19.0); c = router.cell(33.5, 46.6)
+                vb[a[0]:c[0], a[1]:c[1]] = True
+                block = {l: vb for l in router.LAYERS}
+            ok = self.route_net(R, net, width, soft, log, block)
+            if not ok:
+                failed.append(net)
+        return failed
+
+    def route_net(self, R, net, width, soft, log, block=None):
+        nc = self.nets[net].GetNetCode()
+        allow = self.front_allow(net)
+        for attempt in range(80):
+            groups = router.clusters(self.net_items(nc))
+            if len(groups) <= 1:
+                return True
+            if attempt == 0 and net in CORE_NETS:
+                # the copied RPi layout must arrive complete; a patch here means the copy lost something
+                log(f'  CORE NET PATCHED BY ROUTER: {net} ({len(groups)} pieces)')
+                self.core_patched.append(net)
+            A = [self.anchors(g) for g in groups]
+            pairs = []
+            for i in range(len(groups)):
+                for j in range(i + 1, len(groups)):
+                    best = None
+                    for pa in A[i]:
+                        for pb in A[j]:
+                            d = math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+                            if best is None or d < best[0]:
+                                best = (d, i, j, pa, pb)
+                    pairs.append(best)
+            pairs.sort(key=lambda p: p[0])
+            done = False
+            for d, i, j, pa, pb in pairs[:6]:
+                src, dst = groups[i], groups[j]
+                smask = {l: R.copper_mask(src, l) for l in router.LAYERS}
+                tmask = {l: R.copper_mask(dst, l) for l in router.LAYERS}
+                path = None
+                for margin in (5, 12, 40):
+                    win = (min(pa[0], pb[0]) - margin, min(pa[1], pb[1]) - margin,
+                           max(pa[0], pb[0]) + margin, max(pa[1], pb[1]) + margin)
+                    path = R.route(net, smask, tmask, width, win, allow_front=allow, soft=soft, block=block)
+                    if path:
+                        break
+                if path:
+                    runs = R.simplify(net, path, width)
+                    R.commit(net, runs, width, self.snap(src, path[0]), self.snap(dst, path[-1]))
+                    done = True
+                    break
+                log(f'  no path {net}: gap {d:.1f} mm {tuple(round(v, 2) for v in pa)} -> '
+                    f'{tuple(round(v, 2) for v in pb)}')
+            if not done:
+                log(f'  FAILED {net}: {len(groups)} groups left')
+                return False
+        log(f'  FAILED {net}: too many passes')
+        return False
+
+    # ----------------------------------------------------------------- ground
+    def stitch_ground(self, log=print):
+        """Every ground pad gets a via to the In2 plane within ~1.3 mm unless one is already there."""
+        R = self.R
+        gnd = self.nets['GND']
+        vias = [t for t in self.board.GetTracks() if t.GetClass() == 'PCB_VIA' and t.GetNetCode() == gnd.GetNetCode()]
+        # plated holes of ground (thermal vias in exposed pads, shell tabs) count as vias too
+        vias += [p for fp in self.board.GetFootprints() for p in fp.Pads()
+                 if p.HasHole() and p.GetNetCode() == gnd.GetNetCode()]
+        added = 0
+        for fp in self.board.GetFootprints():
+            if fp.GetReference() == 'U1':
+                continue          # the copied RPi layout already grounds every U1 pin
+            for p in fp.Pads():
+                if p.GetNetCode() != gnd.GetNetCode() or p.HasHole():
+                    continue
+                if fp.GetReference() == 'U5' and p.GetNumber() in ('5', '18', '29'):
+                    continue      # tied into the exposed pad, which carries its own vias
+                px, py = mm(p.GetPosition())
+                if any(math.hypot(px - mm(v.GetPosition())[0], py - mm(v.GetPosition())[1]) < 1.3 for v in vias):
+                    continue
+                layer = pcbnew.F_Cu if p.IsOnLayer(pcbnew.F_Cu) else pcbnew.B_Cu
+                v = self.place_stitch(p, layer)
+                if v is None:
+                    log(f'  no ground via for {fp.GetReference()} pad {p.GetNumber()}')
+                    continue
+                vias.append(v)
+                added += 1
+        log(f'  ground vias added: {added}')
+
+    def place_stitch(self, pad, layer):
+        R = self.R
+        gnd = self.nets['GND']
+        nc = gnd.GetNetCode()
+        px, py = mm(pad.GetPosition())
+        bb = pad.GetBoundingBox()
+        r0 = max(bb.GetWidth(), bb.GetHeight()) / 2e6
+        tm = R.track_maps[min(R.widths, key=lambda w: abs(w - 0.25))]
+        best = None
+        for dist in [r0 + k * 0.1 for k in range(3, 26)]:
+            for k in range(24):
+                ang = 2 * math.pi * k / 24
+                vx, vy = px + dist * math.cos(ang), py + dist * math.sin(ang)
+                iy, ix = router.cell(vx, vy)
+                if not (0 <= iy < router.NY and 0 <= ix < router.NX):
+                    continue
+                if R.edge[iy, ix] or R.via_keepout[iy, ix] or R.via_maps.holes[iy, ix] != router.FREE:
+                    continue
+                if any(R.via_maps.occ[l][iy, ix] not in (router.FREE, nc) for l in router.LAYERS):
+                    continue
+                if not R._segment_free('GND', layer, router.cell(px, py), (iy, ix), 0.25):
+                    continue
+                best = (vx, vy)
+                break
+            if best:
+                break
+        if not best:
+            return None
+        v = self.via('GND', *best)
+        t = self.track('GND', layer, [(px, py), best], 0.25)
+        R.add_items([v] + t)
+        return v
+
+    def planes(self):
+        inset = 0.4
+        r = BR
+        pts = []
+        for cx, cy, a0 in ((BW - r, r, -90), (BW - r, BH - r, 0), (r, BH - r, 90), (r, r, 180)):
+            for k in range(7):
+                a = math.radians(a0 + 15 * k)
+                pts.append((cx + (r - inset) * math.cos(a), cy + (r - inset) * math.sin(a)))
+        self.zone('GND', pcbnew.In2_Cu, pts, priority=0, clearance=0.2, min_w=0.2, name='plane GND In2')
+        self.zone('GND', pcbnew.B_Cu, pts, priority=0, clearance=0.2, min_w=0.2, gap=0.25, spoke=0.3,
+                  name='pour GND back')
+
+    def name_unconnected(self):
+        """Give no-connect pins the 'unconnected-(...)' nets eeschema assigns, so parity checks pass."""
+        import subprocess, tempfile
+        out = os.path.join(tempfile.gettempdir(), 'mc1_card_nc.net')
+        subprocess.run([r'C:\Program Files\KiCad\9.0\bin\kicad-cli.exe', 'sch', 'export', 'netlist',
+                        '--format', 'kicadsexpr', '-o', out, os.path.join(PROJ, 'card.kicad_sch')],
+                       check=True, capture_output=True)
+        net = load(out)
+        os.remove(out)
+        for n in find(first(net, 'nets'), 'net'):
+            name = val(n, 'name')
+            if not name.startswith('unconnected-'):
+                continue
+            ni = self.board.FindNet(name)
+            if ni is None:
+                ni = pcbnew.NETINFO_ITEM(self.board, name)
+                self.board.Add(ni)
+            for node in find(n, 'node'):
+                fp = self.fps.get(val(node, 'ref'))
+                for p in (fp.Pads() if fp else []):
+                    if p.GetNumber() == val(node, 'pin'):
+                        p.SetNet(ni)
+
+    def cleanup(self, log=print):
+        """Remove track stubs with a free end and vias that join fewer than two layers."""
+        b = self.board
+        copper = (pcbnew.F_Cu, pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.B_Cu)
+        removed = 0
+        changed = True
+        while changed:
+            changed = False
+            by_net = {}
+            for fp in b.GetFootprints():
+                for p in fp.Pads():
+                    by_net.setdefault(p.GetNetCode(), []).append(p)
+            # one list per pass: every GetTracks() call hands out fresh SWIG wrappers, so "is" only
+            # recognises an item against wrappers taken from the same list
+            all_tracks = list(b.GetTracks())
+            for t in all_tracks:
+                by_net.setdefault(t.GetNetCode(), []).append(t)
+            for z in b.Zones():
+                if not z.GetIsRuleArea():
+                    by_net.setdefault(z.GetNetCode(), []).append(z)
+
+            def touches(item, pt, layer):
+                cls = item.GetClass()
+                if cls == 'ZONE':
+                    return item.IsOnLayer(layer) and item.Outline().Contains(pt)
+                if cls == 'PAD':
+                    # the shape of that very layer: pad hit tests default to the front padstack
+                    return item.IsOnLayer(layer) and item.GetEffectiveShape(layer).Collide(pt, FromMM(0.005))
+                if cls == 'PCB_VIA':
+                    return item.HitTest(pt)
+                if item.GetLayer() != layer:
+                    return False
+                # like KiCad: a track end joins another track only on that track's centre line
+                s, e = item.GetStart(), item.GetEnd()
+                dx, dy = e.x - s.x, e.y - s.y
+                L2 = float(dx * dx + dy * dy)
+                u = 0.0 if L2 == 0 else max(0.0, min(1.0, ((pt.x - s.x) * dx + (pt.y - s.y) * dy) / L2))
+                return math.hypot(pt.x - (s.x + u * dx), pt.y - (s.y + u * dy)) <= FromMM(0.002)
+
+            def carries_junction(t, same):
+                """Another item ends on this track's body: removing it would cut that item off."""
+                for o in same:
+                    if o is t:
+                        continue
+                    cls = o.GetClass()
+                    if cls == 'PCB_TRACK' and o.GetLayer() == t.GetLayer():
+                        pts = [o.GetStart(), o.GetEnd()]
+                    elif cls == 'PCB_VIA':
+                        pts = [o.GetPosition()]
+                    else:
+                        continue
+                    for q in pts:
+                        near = t.GetWidth() / 2 + FromMM(0.03)
+                        if t.HitTest(q, 0) and not any(math.hypot(q.x - e.x, q.y - e.y) < near
+                                                       for e in (t.GetStart(), t.GetEnd())):
+                            return True
+                return False
+
+            for t in all_tracks:
+                if changed:
+                    break         # the lists are stale once something is removed
+                same = by_net.get(t.GetNetCode(), [])
+                if t.GetClass() == 'PCB_VIA':
+                    pt = t.GetPosition()
+                    r = t.GetWidth(pcbnew.F_Cu) // 2
+                    on = set()
+                    for l in copper:
+                        for o in same:
+                            if o is t:
+                                continue
+                            cls = o.GetClass()
+                            if cls == 'PCB_TRACK' and o.GetLayer() == l and o.HitTest(pt, r):
+                                on.add(l)
+                            elif cls == 'PAD' and o.IsOnLayer(l) and o.GetEffectiveShape(l).Collide(pt, r):
+                                on.add(l)
+                            elif cls == 'ZONE' and touches(o, pt, l):
+                                on.add(l)
+                    if len(on) < 2:
+                        b.Remove(t); removed += 1; changed = True
+                    continue
+                ends = [t.GetStart(), t.GetEnd()]
+                free = [not any(o is not t and touches(o, pt, t.GetLayer()) for o in same) for pt in ends]
+                tiny = t.GetLength() < FromMM(0.08)    # leftovers of the copied layout, never a real bridge
+                if any(free) and (tiny or not carries_junction(t, same)):
+                    b.Remove(t); removed += 1; changed = True
+        # last word to KiCad's own connectivity for slivers shorter than a grid step
+        b.BuildConnectivity()
+        conn = b.GetConnectivity()
+        for t in list(b.GetTracks()):
+            if t.GetClass() == 'PCB_TRACK' and t.GetLength() < FromMM(0.08):
+                try:
+                    if conn.TestTrackEndpointDangling(t, False):
+                        b.Remove(t); removed += 1
+                except Exception:
+                    pass
+        log(f'  cleanup removed {removed} stubs and vias')
+
+    def lettering(self):
+        """Inter Tight lettering from text.json (make_text.py); the name is cut by the card edge."""
+        import json
+        with open(os.path.join(HERE, 'text.json'), encoding='utf-8') as fh:
+            data = json.load(fh)
+        clip = pcbnew.SHAPE_POLY_SET()
+        clip.NewOutline()
+        inset, r = 0.3, BR - 0.3
+        for cx, cy, a0 in ((BW - BR, BR, -90), (BW - BR, BH - BR, 0), (BR, BH - BR, 90), (BR, BR, 180)):
+            for k in range(10):
+                a = math.radians(a0 + 10 * k)
+                clip.Append(FromMM(OX + cx + r * math.cos(a)), FromMM(OY + cy + r * math.sin(a)))
+        for item in data:
+            layer = pcbnew.F_SilkS if item['layer'] == 'F.SilkS' else pcbnew.B_SilkS
+            for p in item['polys']:
+                sets = {}
+                for key in ('add', 'sub'):
+                    s_ = pcbnew.SHAPE_POLY_SET()
+                    for c in p[key]:
+                        o = s_.NewOutline()
+                        for x, y in c:
+                            s_.Append(FromMM(OX + x), FromMM(OY + y), o)
+                    s_.Simplify()        # union of overlapping contours
+                    sets[key] = s_
+                ps = sets['add']
+                if sets['sub'].OutlineCount():
+                    ps.BooleanSubtract(sets['sub'])
+                ps.BooleanIntersection(clip)
+                ps.Fracture()
+                for i in range(ps.OutlineCount()):
+                    one = pcbnew.SHAPE_POLY_SET()
+                    one.AddOutline(ps.Outline(i))
+                    s = pcbnew.PCB_SHAPE(self.board)
+                    s.SetShape(pcbnew.SHAPE_T_POLY)
+                    s.SetPolyShape(one)
+                    s.SetFilled(True)
+                    s.SetWidth(0)
+                    s.SetLayer(layer)
+                    self.board.Add(s)
+
+    def fill(self):
+        pcbnew.ZONE_FILLER(self.board).Fill(self.board.Zones())
+
+    def save(self, path):
+        self.board.Save(path)
+
+
+STACKUP = '''	(stackup
+		(layer "F.SilkS" (type "Top Silk Screen") (color "Black"))
+		(layer "F.Paste" (type "Top Solder Paste"))
+		(layer "F.Mask" (type "Top Solder Mask") (color "White") (thickness 0.01))
+		(layer "F.Cu" (type "copper") (thickness 0.035))
+		(layer "dielectric 1" (type "prepreg") (color "FR4 natural") (thickness 0.2) (material "FR4") (epsilon_r 4.4) (loss_tangent 0.02))
+		(layer "In1.Cu" (type "copper") (thickness 0.0152))
+		(layer "dielectric 2" (type "core") (color "FR4 natural") (thickness 0.4996) (material "FR4") (epsilon_r 4.6) (loss_tangent 0.02))
+		(layer "In2.Cu" (type "copper") (thickness 0.0152))
+		(layer "dielectric 3" (type "prepreg") (color "FR4 natural") (thickness 0.2) (material "FR4") (epsilon_r 4.4) (loss_tangent 0.02))
+		(layer "B.Cu" (type "copper") (thickness 0.035))
+		(layer "B.Mask" (type "Bottom Solder Mask") (color "White") (thickness 0.01))
+		(layer "B.Paste" (type "Bottom Solder Paste"))
+		(layer "B.SilkS" (type "Bottom Silk Screen") (color "Black"))
+		(copper_finish "ENIG")
+		(dielectric_constraints no)
+	)
+'''
+
+
+def set_stackup(path):
+    """White mask, black legend, ENIG, 1.0 mm: the stackup is not reachable from SWIG, so patch the file."""
+    with open(path, encoding='utf-8') as fh:
+        text = fh.read()
+    if '(stackup' not in text:
+        text = text.replace('\t(setup\n', '\t(setup\n' + STACKUP, 1)
+    with open(path, 'w', encoding='utf-8', newline='\n') as fh:
+        fh.write(text)
+
+
+SIG = 0.15
+TASKS = ([('USB_DP', 0.25), ('USB_DN', 0.25), ('CC1', SIG), ('CC2', SIG)] +
+         [(f'CA{k}', SIG) for k in range(1, 10)] + [(f'CB{k}', SIG) for k in range(1, 10)] +
+         [('EE_WP', SIG), ('SDA', SIG), ('SCL', SIG), ('LUX_RANGE', SIG), ('LUX', SIG), ('BUZZ', SIG),
+          ('SWDIO', SIG), ('SWCLK', SIG), ('BOOT', SIG), ('VBUS', 0.4), ('+3V3', 0.4),
+          ('LED_REXT', SIG), ('LED_CFILT', SIG), ('LED_IN', SIG), ('BUZZ_B', SIG), ('BUZZ_N', 0.25),
+          ('+1V1', 0.4), ('VREG_AVDD', SIG), ('VREG_LX', 0.4), ('XIN', SIG), ('XOUT', SIG), ('XOUT_R', SIG),
+          ('USB_DP_MCU', SIG), ('USB_DN_MCU', SIG), ('QSPI_SS', SIG), ('FLASH_SS', SIG), ('QSPI_SCLK', SIG),
+          ('QSPI_SD0', SIG), ('QSPI_SD1', SIG), ('QSPI_SD2', SIG), ('QSPI_SD3', SIG)])
+
+
+def main():
+    import time
+    t0 = time.time()
+    b = Builder()
+    b.outline()
+    b.place_all()
+    b.core()
+    b.matrix()
+    b.prerouted()
+    b.fps['U7'].Reference().SetPosition(V(37.0, 37.6))
+    out = os.path.join(PROJ, 'card.kicad_pcb')
+    b.save(out)
+    import write_project          # saving a fresh BOARD rewrites the project with default rules
+    b = Builder.load(out)
+    b.name_unconnected()
+    b.fill()
+    print(f'placed, core and matrix done in {time.time() - t0:.0f} s', flush=True)
+    failed = b.route_all(TASKS)
+    print(f'routed in {time.time() - t0:.0f} s, failed: {failed}')
+    b.stitch_ground()
+    b.planes()
+    b.fill()
+    b.cleanup()
+    b.lettering()
+    b.fill()
+    b.save(out)
+    set_stackup(out)
+    import importlib
+    importlib.reload(write_project)
+    print('saved', out, 'footprints', len(b.fps), 'tracks', len(b.board.GetTracks()), f'{time.time() - t0:.0f} s')
+    return b
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,15 @@
+# KiCad local state and backups
+*.kicad_prl
+*-backups/
+fp-info-cache
+*.lck
+_autosave-*
+
+# Python
+__pycache__/
+
+# shell crash dumps
+*.stackdump
+
+# fab/card-gerbers.zip holds the same files
+fab/gerbers/
