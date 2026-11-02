@@ -82,6 +82,45 @@ LCSC = {
     '4.7k': 'C25900', '22k': 'C25768', '2.2k': 'C25879', '33k': 'C25779', '0': 'C17168',
 }
 
+# Sourcing per LCSC code, for the BOM a manufacturer quotes from (tools/make_bom.py):
+# (manufacturer, MPN, description, substitutes allowed?). Checked against LCSC/JLC on 2026-11-02.
+SUB_PASSIVE = 'Yes: same value, size, tolerance, voltage and dielectric or better'
+SOURCING = {
+    'C42411118': ('Raspberry Pi', 'RP2350A', 'MCU, dual Cortex-M33/RISC-V, QFN-60 7x7', 'No'),
+    'C97521': ('Winbond', 'W25Q128JVSIQ', 'QSPI NOR flash 128 Mbit, SOIC-8 208 mil', 'No'),
+    'C191206': ('Lumissil (ISSI)', 'IS31FL3731-QFLS2-TR', 'LED matrix driver 144 LEDs, I2C, QFN-28 4x4', 'No'),
+    'C42411119': ('Abracon', 'AOTA-B201610S3R3-101-T', 'Power inductor 3.3 uH 2.1 A, 0806, polarity marked',
+                  'No: Raspberry Pi requires this exact part for the RP2350 regulator'),
+    'C20625731': ('Abracon', 'ABM8-272-T3', 'Crystal 12 MHz, 10 pF load, 3225',
+                  'No: Raspberry Pi recommends this exact part'),
+    'C143695': ('Vishay', 'TEMT6200FX01', 'Ambient light sensor, phototransistor, 0805', 'No'),
+    'C6203': ('Microchip', 'AT24C02C-SSHM-T', 'EEPROM 2 Kbit I2C with WP pin, SOIC-8', 'Yes: any 24C02, SOIC-8, same pinout'),
+    'C51118': ('Diodes Inc.', 'AP2112K-3.3TRG1', 'LDO 3.3 V 600 mA with enable, SOT-23-5', 'Ask first: same pinout only'),
+    'C7519': ('STMicroelectronics', 'USBLC6-2SC6', 'USB ESD protection, SOT-23-6', 'Ask first: same pinout only'),
+    'C165948': ('Korean Hroparts (HRO)', 'TYPE-C-31-M-12', 'USB Type-C receptacle 16 pin, SMD + 4 shell pins', 'No'),
+    'C94599': ('Jiangsu Huaneng', 'MLT-8530', 'Magnetic buzzer 3.6 V 2.7 kHz, SMD 8.5x8.5', 'Ask first: same footprint, rated for 3.3 V'),
+    'C318884': ('XKB Connection', 'TS-1187A-B-A-B', 'Tactile switch SPST, SMD 5.1x5.1', 'Ask first: same footprint'),
+    'C20526': ('Changjiang (CJ)', 'MMBT3904', 'NPN transistor 40 V 200 mA, SOT-23', 'Yes: any MMBT3904'),
+    'C2128': ('Changjiang (CJ)', '1N4148WS', 'Switching diode 100 V 150 mA, SOD-323', 'Yes: any 1N4148WS'),
+    'C2286': ('Hubei KENTO', 'KT-0603R', 'LED red 620 nm, water clear, 0603',
+              'No: all 144 from one lot, they form the visible display'),
+    'C1525': ('Samsung', 'CL05B104KO5NNNC', 'MLCC 100 nF 16 V X7R 10%, 0402', SUB_PASSIVE),
+    'C1548': ('Fenghua (FH)', '0402CG150J500NT', 'MLCC 15 pF 50 V C0G 5%, 0402', SUB_PASSIVE),
+    'C23733': ('Samsung', 'CL05A475MP5NRNC', 'MLCC 4.7 uF 10 V X5R 20%, 0402', SUB_PASSIVE),
+    'C52923': ('Samsung', 'CL05A105KA5NQNC', 'MLCC 1 uF 25 V X5R 10%, 0402', SUB_PASSIVE),
+    'C19666': ('Samsung', 'CL10A475KO8NNNC', 'MLCC 4.7 uF 16 V X5R 10%, 0603', SUB_PASSIVE),
+    'C15850': ('Samsung', 'CL21A106KAYNNNE', 'MLCC 10 uF 25 V X5R 10%, 0805', SUB_PASSIVE),
+    'C17168': ('UNI-ROYAL', '0402WGF0000TCE', 'Resistor 0 ohm, 0402', SUB_PASSIVE),
+    'C25100': ('UNI-ROYAL', '0402WGF270JTCE', 'Resistor 27 ohm 1% 1/16 W, 0402', SUB_PASSIVE),
+    'C25105': ('UNI-ROYAL', '0402WGF330JTCE', 'Resistor 33 ohm 1% 1/16 W, 0402', SUB_PASSIVE),
+    'C25117': ('UNI-ROYAL', '0402WGF4700TCE', 'Resistor 470 ohm 1% 1/16 W, 0402', SUB_PASSIVE),
+    'C11702': ('UNI-ROYAL', '0402WGF1001TCE', 'Resistor 1 kohm 1% 1/16 W, 0402', SUB_PASSIVE),
+    'C25900': ('UNI-ROYAL', '0402WGF4701TCE', 'Resistor 4.7 kohm 1% 1/16 W, 0402', SUB_PASSIVE),
+    'C25905': ('UNI-ROYAL', '0402WGF5101TCE', 'Resistor 5.1 kohm 1% 1/16 W, 0402', SUB_PASSIVE),
+    'C25744': ('UNI-ROYAL', '0402WGF1002TCE', 'Resistor 10 kohm 1% 1/16 W, 0402', SUB_PASSIVE),
+    'C25779': ('UNI-ROYAL', '0402WGF3302TCE', 'Resistor 33 kohm 1% 1/16 W, 0402', SUB_PASSIVE),
+}
+
 PARTS = {}
 
 
