@@ -1,4 +1,4 @@
-"""Single source of truth for the MC-1 card: parts, values, LCSC codes, nets.
+"""Single source of truth for the MK-1 card: parts, values, LCSC codes, nets.
 
 Both gen_sch.py (schematic) and build_pcb.py (board) read this module, so the
 schematic and the board cannot drift apart.

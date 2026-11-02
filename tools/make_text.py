@@ -22,7 +22,7 @@ ITEMS = [
     ('F.SilkS', 'keetsta', 800, 23.5, 2.6, 55.6, -1.3, 'left', False),
     ('F.SilkS', 'keetsta.me', 450, 2.1, 10.6, 9.6, 0.12, 'left', False),
     ('B.SilkS', 'shell over usb-c', 500, 2.0, 6.0, 41.4, 0.12, 'left', True),
-    ('B.SilkS', 'keetsta.me/mc1', 700, 3.4, 6.0, 45.6, 0.08, 'left', True),
+    ('B.SilkS', 'keetsta.me/mk1', 700, 3.4, 6.0, 45.6, 0.08, 'left', True),
     ('B.SilkS', 'software engineer', 600, 2.0, 6.0, 49.4, 0.12, 'left', True),
     ('B.SilkS', 'keetsta@icloud.com', 500, 2.0, 6.0, 52.3, 0.12, 'left', True),
     ('B.SilkS', 't.me/keetsta', 500, 2.0, 30.0, 49.4, 0.12, 'left', True),

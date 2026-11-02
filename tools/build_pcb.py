@@ -695,7 +695,7 @@ class Builder:
     def name_unconnected(self):
         """Give no-connect pins the 'unconnected-(...)' nets eeschema assigns, so parity checks pass."""
         import subprocess, tempfile
-        out = os.path.join(tempfile.gettempdir(), 'mc1_card_nc.net')
+        out = os.path.join(tempfile.gettempdir(), 'mk1_card_nc.net')
         subprocess.run([r'C:\Program Files\KiCad\9.0\bin\kicad-cli.exe', 'sch', 'export', 'netlist',
                         '--format', 'kicadsexpr', '-o', out, os.path.join(PROJ, 'card.kicad_sch')],
                        check=True, capture_output=True)

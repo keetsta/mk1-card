@@ -1,4 +1,4 @@
-"""Small grid router for the MC-1 card (KiCad Python, numpy + PIL).
+"""Small grid router for the MK-1 card (KiCad Python, numpy + PIL).
 
 Routes on F.Cu, In1.Cu and B.Cu with through vias; In2.Cu is the ground plane and is never used for
 tracks. Obstacles are rasterised from the board with the clearance already added, so a free cell is a
