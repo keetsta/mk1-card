@@ -9,7 +9,6 @@ GPIO = {
     4: 'SDA',        # I2C0 SDA: IS31FL3731 + AT24C02
     5: 'SCL',        # I2C0 SCL
     8: 'EE_WP',      # AT24C02 write protect, high = protected
-    22: 'BUZZ',      # PWM to the buzzer driver
     26: 'LUX',       # ADC0, light sensor
     27: 'LUX_RANGE', # drive low to add 1k in parallel with the 10k load
 }
@@ -29,10 +28,12 @@ RP2350A_PINS = {
 
 
 def rp2350_nets():
+    # DVDD comes from U8, not from the on-chip regulator (RP2350 datasheet 6.3.7, figure 24): VREG_VIN and
+    # VREG_AVDD stay powered for the power-on reset and brown-out blocks, VREG_LX is left open, VREG_FB is grounded
     fixed = {
         'IOVDD': '+3V3', 'DVDD': '+1V1', 'ADC_AVDD': '+3V3', 'USB_OTP_VDD': '+3V3', 'QSPI_IOVDD': '+3V3',
-        'VREG_VIN': '+3V3', 'VREG_AVDD': 'VREG_AVDD', 'VREG_PGND': 'GND', 'VREG_LX': 'VREG_LX',
-        'VREG_FB': '+1V1', 'XIN': 'XIN', 'XOUT': 'XOUT', 'SWCLK': 'SWCLK', 'SWDIO': 'SWDIO', 'RUN': None,
+        'VREG_VIN': '+3V3', 'VREG_AVDD': 'VREG_AVDD', 'VREG_PGND': 'GND', 'VREG_LX': None,
+        'VREG_FB': 'GND', 'XIN': 'XIN', 'XOUT': 'XOUT', 'SWCLK': 'SWCLK', 'SWDIO': 'SWDIO', 'RUN': None,
         'USB_DM': 'USB_DN_MCU', 'USB_DP': 'USB_DP_MCU', 'QSPI_SS': 'QSPI_SS', 'QSPI_SCLK': 'QSPI_SCLK',
         'QSPI_SD0': 'QSPI_SD0', 'QSPI_SD1': 'QSPI_SD1', 'QSPI_SD2': 'QSPI_SD2', 'QSPI_SD3': 'QSPI_SD3',
         'GND': 'GND',
@@ -89,19 +90,16 @@ SOURCING = {
     'C42411118': ('Raspberry Pi', 'RP2350A', 'MCU, dual Cortex-M33/RISC-V, QFN-60 7x7', 'No'),
     'C97521': ('Winbond', 'W25Q128JVSIQ', 'QSPI NOR flash 128 Mbit, SOIC-8 208 mil', 'No'),
     'C191206': ('Lumissil (ISSI)', 'IS31FL3731-QFLS2-TR', 'LED matrix driver 144 LEDs, I2C, QFN-28 4x4', 'No'),
-    'C42411119': ('Abracon', 'AOTA-B201610S3R3-101-T', 'Power inductor 3.3 uH 2.1 A, 0806, polarity marked',
-                  'No: Raspberry Pi requires this exact part for the RP2350 regulator'),
-    'C20625731': ('Abracon', 'ABM8-272-T3', 'Crystal 12 MHz, 10 pF load, 3225',
+    'C485147': ('Texas Instruments', 'TLV74311PDBVR', 'LDO 1.1 V 300 mA with enable, SOT-23-5',
+                'Ask first: fixed 1.1 V, >= 200 mA, same pinout (1 IN, 2 GND, 3 EN, 4 NC, 5 OUT)'),
+    'C20625731':('Abracon', 'ABM8-272-T3', 'Crystal 12 MHz, 10 pF load, 3225',
                   'No: Raspberry Pi recommends this exact part'),
     'C143695': ('Vishay', 'TEMT6200FX01', 'Ambient light sensor, phototransistor, 0805', 'No'),
     'C6203': ('Microchip', 'AT24C02C-SSHM-T', 'EEPROM 2 Kbit I2C with WP pin, SOIC-8', 'Yes: any 24C02, SOIC-8, same pinout'),
     'C51118': ('Diodes Inc.', 'AP2112K-3.3TRG1', 'LDO 3.3 V 600 mA with enable, SOT-23-5', 'Ask first: same pinout only'),
     'C7519': ('STMicroelectronics', 'USBLC6-2SC6', 'USB ESD protection, SOT-23-6', 'Ask first: same pinout only'),
     'C165948': ('Korean Hroparts (HRO)', 'TYPE-C-31-M-12', 'USB Type-C receptacle 16 pin, SMD + 4 shell pins', 'No'),
-    'C94599': ('Jiangsu Huaneng', 'MLT-8530', 'Magnetic buzzer 3.6 V 2.7 kHz, SMD 8.5x8.5', 'Ask first: same footprint, rated for 3.3 V'),
     'C318884': ('XKB Connection', 'TS-1187A-B-A-B', 'Tactile switch SPST, SMD 5.1x5.1', 'Ask first: same footprint'),
-    'C20526': ('Changjiang (CJ)', 'MMBT3904', 'NPN transistor 40 V 200 mA, SOT-23', 'Yes: any MMBT3904'),
-    'C2128': ('Changjiang (CJ)', '1N4148WS', 'Switching diode 100 V 150 mA, SOD-323', 'Yes: any 1N4148WS'),
     'C2286': ('Hubei KENTO', 'KT-0603R', 'LED red 620 nm, water clear, 0603',
               'No: all 144 from one lot, they form the visible display'),
     'C1525': ('Samsung', 'CL05B104KO5NNNC', 'MLCC 100 nF 16 V X7R 10%, 0402', SUB_PASSIVE),
@@ -113,7 +111,6 @@ SOURCING = {
     'C17168': ('UNI-ROYAL', '0402WGF0000TCE', 'Resistor 0 ohm, 0402', SUB_PASSIVE),
     'C25100': ('UNI-ROYAL', '0402WGF270JTCE', 'Resistor 27 ohm 1% 1/16 W, 0402', SUB_PASSIVE),
     'C25105': ('UNI-ROYAL', '0402WGF330JTCE', 'Resistor 33 ohm 1% 1/16 W, 0402', SUB_PASSIVE),
-    'C25117': ('UNI-ROYAL', '0402WGF4700TCE', 'Resistor 470 ohm 1% 1/16 W, 0402', SUB_PASSIVE),
     'C11702': ('UNI-ROYAL', '0402WGF1001TCE', 'Resistor 1 kohm 1% 1/16 W, 0402', SUB_PASSIVE),
     'C25900': ('UNI-ROYAL', '0402WGF4701TCE', 'Resistor 4.7 kohm 1% 1/16 W, 0402', SUB_PASSIVE),
     'C25905': ('UNI-ROYAL', '0402WGF5101TCE', 'Resistor 5.1 kohm 1% 1/16 W, 0402', SUB_PASSIVE),
@@ -156,11 +153,11 @@ C('C5', '10u', '+3V3', 'GND', 'power', fp='Capacitor_SMD:C_0805_2012Metric')
 C('C19', '10u', '+3V3', 'GND', 'power', fp='Capacitor_SMD:C_0805_2012Metric')
 
 # ---- RP2350A core: copied from the Raspberry Pi RP2350A minimal design R4 ----
+# without its inductor: the polarity-marked AOTA part RPi asks for is hard to source, an unmarked one lands
+# the wrong way round on about half the boards, so the core runs from an LDO instead (see rp2350_nets)
 part('U1', 'RP2350A', 'card:RP2350A', 'card:RPi_rp2350a_vias', 'C42411118', rp2350_nets(), 'mcu')
-part('L1', '3.3u', 'Device:L', 'card:RPi_aota-b201610s3r3-101-t', 'C42411119',
-     {1: '+1V1', 2: 'VREG_LX'}, 'mcu', 'Abracon AOTA-B201610S3R3-101-T, polarity marked, dot = pin 1')
-C('C6', '4.7u', '+3V3', 'GND', 'mcu', fp=RPI_C0402W, desc='regulator CIN')
-C('C7', '4.7u', '+1V1', 'GND', 'mcu', fp=RPI_C0402W, desc='regulator COUT')
+C('C6', '4.7u', '+3V3', 'GND', 'mcu', fp=RPI_C0402W, desc='VREG_VIN input capacitor')
+C('C7', '4.7u', '+1V1', 'GND', 'mcu', fp=RPI_C0402W, desc='DVDD bulk, where the regulator output was')
 C('C9', '4.7u', 'VREG_AVDD', 'GND', 'mcu', fp=RPI_C0402)
 R('R3', '33', '+3V3', 'VREG_AVDD', 'mcu', fp=RPI_R0402)
 for ref in ('C8', 'C11'):
@@ -184,6 +181,11 @@ R('R10', '0', 'QSPI_SS', 'FLASH_SS', 'mcu', fp=RPI_R0402)
 R('R6', '1k', 'QSPI_SS', 'BOOT', 'mcu', fp=RPI_R0402, desc='BOOTSEL strap, button pulls QSPI_SS low')
 part('SW1', 'TS-1187A-B-A-B', 'Switch:SW_Push', 'Button_Switch_SMD:SW_Push_1P1T_XKB_TS-1187A', 'C318884',
      {1: 'BOOT', 2: 'GND'}, 'mcu', 'the only button: BOOTSEL at power-up, user input at runtime')
+part('U8', 'TLV74311P', 'card:TLV74311P', 'Package_TO_SOT_SMD:SOT-23-5', 'C485147',
+     {1: '+3V3', 2: 'GND', 3: '+3V3', 4: None, 5: '+1V1'}, 'mcu',
+     'DVDD 1.1 V; the core draws tens of mA, ~0.1 W across the LDO')
+C('C27', '1u', '+3V3', 'GND', 'mcu', desc='U8 input')
+C('C28', '1u', '+1V1', 'GND', 'mcu', desc='U8 output, stable from 1 uF')
 part('TP1', 'SWCLK', 'Connector:TestPoint', 'TestPoint:TestPoint_Pad_D1.0mm', '', {1: 'SWCLK'}, 'mcu')
 part('TP2', 'SWDIO', 'Connector:TestPoint', 'TestPoint:TestPoint_Pad_D1.0mm', '', {1: 'SWDIO'}, 'mcu')
 part('TP3', 'GND', 'Connector:TestPoint', 'TestPoint:TestPoint_Pad_D1.0mm', '', {1: 'GND'}, 'mcu')
@@ -223,16 +225,6 @@ part('U6', 'TEMT6200FX01', 'card:TEMT6200FX01', 'card:TEMT6200FX01', 'C143695', 
 R('R17', '10k', 'LUX', 'GND', 'misc', desc='saturates near 1400 lx (typ part)')
 R('R18', '1k', 'LUX', 'LUX_RANGE', 'misc', desc='LUX_RANGE low: 0.9 k load, up to ~15000 lx')
 C('C26', '100n', 'LUX', 'GND', 'misc')
-
-# ---- buzzer ------------------------------------------------------------------------
-part('BZ1', 'MLT-8530', 'Device:Buzzer', 'card:Buzzer_MLT-8530', 'C94599', {1: '+3V3', 2: 'BUZZ_N'}, 'misc',
-     '16 ohm magnetic, 2.7 kHz, rated 2.5..4.5 V so it runs from 3.3 V; PWM only, never DC')
-part('Q1', 'MMBT3904', 'Transistor_BJT:MMBT3904', 'Package_TO_SOT_SMD:SOT-23', 'C20526',
-     {1: 'BUZZ_B', 2: 'GND', 3: 'BUZZ_N'}, 'misc')
-part('D145', '1N4148WS', 'Diode:1N4148WS', 'Diode_SMD:D_SOD-323', 'C2128', {1: '+3V3', 2: 'BUZZ_N'}, 'misc')
-R('R19', '470', 'BUZZ', 'BUZZ_B', 'misc',
-  desc='~4.7 mA base current saturates Q1 at the ~120 mA coil peak even at hFE min (30)')
-R('R20', '10k', 'BUZZ_B', 'GND', 'misc')
 
 
 def all_nets():

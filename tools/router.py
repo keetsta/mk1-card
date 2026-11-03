@@ -212,6 +212,24 @@ class Router:
         self.cost = {pcbnew.F_Cu: 3.0, pcbnew.In1_Cu: 1.0, pcbnew.B_Cu: 1.25}
         self.via_cost = 1.6           # mm of track
         self.rebuild()
+        self.keep_vias_off_pads()
+
+    def keep_vias_off_pads(self, gap=0.1):
+        """No via on or touching an SMD pad, its own net's included: an open via in a pad draws the solder
+        down its barrel, and an 0402 then lifts off one end. Routes leave the pad on its layer first."""
+        arr = np.full((NY, NX), FREE, dtype=np.int32)
+        m = Maps.__new__(Maps)
+        infl = FromMM(self.via_d / 2 + gap)
+        for fp in self.board.GetFootprints():
+            for p in fp.Pads():
+                if p.HasHole():
+                    continue
+                for l in (pcbnew.F_Cu, pcbnew.B_Cu):
+                    if p.IsOnLayer(l):
+                        ps = pcbnew.SHAPE_POLY_SET()
+                        p.TransformShapeToPolygon(ps, l, infl, FromMM(0.005), pcbnew.ERROR_OUTSIDE)
+                        Maps._stamp(m, arr, ps, 1)
+        self.via_keepout |= arr != FREE
 
     # ------------------------------------------------------------------ obstacles
     def rebuild(self):

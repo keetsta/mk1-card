@@ -112,7 +112,22 @@ def temt_symbol(name='TEMT6200FX01'):
     return s
 
 
-CUSTOM = {'card:RP2350A': rp2350a_symbol, 'card:TEMT6200FX01': temt_symbol}
+def ldo_symbol(name='TLV74311P'):
+    # KiCad's library has no TLV743P; pin numbers are its SOT-23-5 (DBV) ones
+    s = sym_header(name, 'U', 'TLV74311P', 'Package_TO_SOT_SMD:SOT-23-5',
+                   'https://www.ti.com/lit/ds/symlink/tlv743p.pdf',
+                   'TI TLV74311P, 300 mA LDO, fixed 1.1 V, enable, SOT-23-5', (0, 7.62), (0, -7.62))
+    body = ['symbol', QStr(f'{name}_0_1'),
+            ['rectangle', ['start', '-7.62', '5.08'], ['end', '7.62', '-5.08'],
+             ['stroke', ['width', '0.254'], ['type', 'default']], ['fill', ['type', 'background']]]]
+    pins = [pin('power_in', -10.16, 2.54, 0, 'IN', 1), pin('input', -10.16, -2.54, 0, 'EN', 3),
+            pin('power_in', 0, -7.62, 90, 'GND', 2), pin('power_out', 10.16, 2.54, 180, 'OUT', 5),
+            pin('no_connect', 10.16, -2.54, 180, 'NC', 4)]
+    s += [body, ['symbol', QStr(f'{name}_1_1')] + pins, ['embedded_fonts', 'no']]
+    return s
+
+
+CUSTOM = {'card:RP2350A': rp2350a_symbol, 'card:TEMT6200FX01': temt_symbol, 'card:TLV74311P': ldo_symbol}
 
 
 def lib_symbol(lib_id):
@@ -146,8 +161,10 @@ row(['C1', 'C5', 'C19'], 96.52, 144.78)
 at('U1', 213.36, 116.84)
 row(['C12', 'C13', 'C14', 'C15', 'C16', 'C17', 'C18'], 175.26, 185.42, 10.16)
 row(['C8', 'C10', 'C11'], 248.92, 185.42, 10.16)
-row(['L1', 'C6', 'C7'], 266.7, 55.88, 12.7)
+row(['C6', 'C7'], 266.7, 55.88, 12.7)
 row(['R3', 'C9'], 266.7, 78.74, 12.7)
+at('U8', 276.86, 170.18)
+row(['C27', 'C28'], 297.18, 170.18, 10.16)
 at('X1', 274.32, 106.68)
 row(['C3', 'C4', 'R2'], 266.7, 124.46, 12.7)
 row(['R7', 'R8'], 266.7, 147.32, 12.7)
@@ -160,15 +177,11 @@ row(['TP1', 'TP2', 'TP3'], 322.58, 124.46, 15.24)
 at('U5', 355.6, 185.42)
 row(['R15', 'R13', 'R14'], 322.58, 236.22, 12.7)
 row(['C21', 'C22', 'C23', 'C24'], 322.58, 254.0, 12.7)
-# EEPROM, light sensor, buzzer
+# EEPROM, light sensor
 at('U7', 449.58, 63.5)
 at('C25', 482.6, 63.5)
 at('U6', 444.5, 109.22)
 row(['R17', 'R18', 'C26'], 462.28, 116.84, 12.7)
-at('BZ1', 452.12, 157.48)
-at('D145', 474.98, 157.48)
-at('Q1', 452.12, 180.34)
-row(['R19', 'R20'], 431.8, 195.58, 12.7)
 # LED matrix
 MX0, MY0, MDX, MDY = 33.02, 292.1, 22.86, 11.43
 for r in range(MATRIX_ROWS):
@@ -182,14 +195,15 @@ TEXTS = [
     ('LED matrix driver, VCC from VBUS', 312.42, 147.32),
     ('EEPROM U7, black box', 419.1, 45.72),
     ('light sensor', 419.1, 96.52),
-    ('buzzer', 419.1, 144.78),
     ('LED matrix 16 x 9: cathodes on the row pin, as in IS31FL3731 datasheet figure 1', 25.4, 279.4),
 ]
 NOTES = [
     ('button = BOOTSEL: held at power-up -> UF2 mode; read at runtime from QSPI_SS (flash access paused)', 312.42, 116.84),
     ('ILED avg = 64.7 / REXT = 1.96 mA per LED; 144 LEDs at full PWM ~ 0.28 A from VBUS', 312.42, 271.78),
     ('LUX_RANGE: hi-Z = 10k load (indoor), drive low = 0.9k load (bright); keep its input buffer off', 419.1, 132.08),
-    ('buzzer: PWM only; DC on the transistor would put 0.3 A through the coil', 419.1, 213.36),
+    ('DVDD from U8, on-chip regulator unused (RP2350 datasheet 6.3.7, figure 24): VREG_LX open, VREG_FB to GND.',
+     165.1, 200.66),
+    ('Firmware: set VREG.HIZ after boot; never put the regulator in low-power mode (P1.x states).', 165.1, 203.2),
 ]
 
 
@@ -300,7 +314,8 @@ def build():
                 used_libs.add(POWER[net])
             else:
                 sh.label(net, end, out, key)
-    for net, x, y in (('VBUS', 30.48, 25.4), ('GND', 40.64, 25.4), ('+1V1', 50.8, 25.4), ('VREG_AVDD', 60.96, 25.4)):
+    # +1V1 needs no flag: U8's output drives it
+    for net, x, y in (('VBUS', 30.48, 25.4), ('GND', 40.64, 25.4), ('VREG_AVDD', 60.96, 25.4)):
         sh.flag(net, x, y)
     used_libs.add('power:PWR_FLAG')
     for s, x, y in TEXTS:
@@ -322,7 +337,7 @@ def build():
         fh.write(dumps(doc) + '\n')
 
     lib = ['kicad_symbol_lib', ['version', '20241209'], ['generator', QStr('kicad_symbol_editor')],
-           ['generator_version', QStr('9.0')], rp2350a_symbol(), temt_symbol()]
+           ['generator_version', QStr('9.0')], rp2350a_symbol(), temt_symbol(), ldo_symbol()]
     with open(os.path.join(PROJ, 'card.kicad_sym'), 'w', encoding='utf-8', newline='\n') as fh:
         fh.write(dumps(lib) + '\n')
     with open(os.path.join(PROJ, 'sym-lib-table'), 'w', encoding='utf-8', newline='\n') as fh:

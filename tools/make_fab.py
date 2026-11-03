@@ -1,9 +1,10 @@
-"""JLCPCB order files: gerbers + drill (zip), BOM and CPL.
+"""Order files: gerbers + drill (zip), BOM, and placement twice.
 
 python make_fab.py      (needs kicad-cli from KiCad 9)
 
-The CPL is written in JLC's terms, not KiCad's: see JLC below. The placement preview at JLC is still
-the final check for every polarised part (LEDs, U1..U7, Q1, D145, L1 dot, X1, BZ1).
+card-cpl.csv is written in JLC's terms, not KiCad's: see JLC below. Any other assembler gets
+card-cpl-kicad.csv, KiCad's own position export, whose angles every CAM tool reads the usual way.
+A placement preview is still the final check for every polarised part (LEDs, U1..U8, X1).
 """
 import csv, math, os, subprocess, sys, zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -25,22 +26,19 @@ NOT_PLACED = {'TP1', 'TP2', 'TP3'}
 # every EasyEDA footprint onto ours. Two-pad polar parts are matched by marking, not by pad number.
 JLC = {
     'C42411118': (0, None),          # RP2350A, pin 1 top-left in both
-    'C42411119': (180, None),        # AOTA inductor: JLC draws the polarity dot at its pad 2, RPi at pad 1 (+1V1)
     'C191206': (270, None),          # IS31FL3731 QFN-28
     'C97521': (270, None),           # W25Q128 SOIC-8
     'C6203': (270, None),            # AT24C02C SOIC-8
     'C7519': (270, None),            # USBLC6 SOT-23-6
     'C51118': (270, None),           # AP2112K SOT-23-5
-    'C20526': (180, None),           # MMBT3904 SOT-23
-    'C2128': (0, None),              # 1N4148WS, cathode bar on the left in both
+    'C485147': (270, None),          # TLV74311P: EasyEDA pads laid out exactly as the AP2112K's (2026-11-03)
     'C2286': (0, None),              # KT-0603R, cathode on the left in both (JLC numbers it pad 2)
     'C143695': (0, None),            # TEMT6200FX01, emitter on the left in both
-    'C94599': (270, None),           # MLT-8530 buzzer
     'C20625731': (0, None),          # ABM8-272-T3 crystal
     'C318884': (0, None),            # TS-1187A button
     'C165948': (0, (0.0, -1.571)),   # USB-C: JLC's origin is 1.571 mm nearer the contact row than KiCad's
 }
-for _code in ('C1525', 'C1548', 'C25117', 'C15850', 'C19666', 'C23733', 'C52923', 'C11702', 'C17168', 'C25100',
+for _code in ('C1525', 'C1548', 'C15850', 'C19666', 'C23733', 'C52923', 'C11702', 'C17168', 'C25100',
               'C25105', 'C25744', 'C25779', 'C25900', 'C25905'):
     JLC[_code] = (0, None)
 
@@ -94,8 +92,8 @@ def main():
         for (value, fp, lcsc), refs in sorted(rows.items(), key=lambda kv: natural(sorted(kv[1], key=natural)[0])):
             w.writerow([value, ','.join(sorted(refs, key=natural)), fp, lcsc])
 
-    # CPL from KiCad's own position export
-    pos = os.path.join(OUT, 'card-pos-kicad.csv')
+    # KiCad's own position export, kept for assemblers other than JLC; JLC's CPL is derived from it
+    pos = os.path.join(OUT, 'card-cpl-kicad.csv')
     run('pcb', 'export', 'pos', '--format', 'csv', '--units', 'mm', '--side', 'both', '-o', pos, PCB)
     with open(pos, encoding='utf-8') as fh, open(os.path.join(OUT, 'card-cpl.csv'), 'w', newline='',
                                                  encoding='utf-8') as out:
@@ -110,7 +108,13 @@ def main():
                                         bottom)
             w.writerow([row['Ref'], f'{x:.4f}mm', f'{y:.4f}mm', 'Bottom' if bottom else 'Top', f'{angle:.1f}'])
             n += 1
-    os.remove(pos)
+
+    # assembly drawings for assemblers other than JLC: the face's silk keeps no polarity marks in sight
+    # (the LED cathode tick sits under the body), the fab layer has them: LED cathode bars, pin 1 corners
+    for side, layer, extra in (('top', 'F.Fab', []), ('bottom', 'B.Fab', ['--mirror'])):
+        run('pcb', 'export', 'pdf', '--mode-single', '--layers', f'{layer},Edge.Cuts', '--sketch-pads-on-fab-layers',
+            '--include-border-title', '--black-and-white', '--drill-shape-opt', '0', *extra,
+            '-o', os.path.join(OUT, f'card-assembly-{side}.pdf'), PCB)
     print('gerbers:', zpath)
     print('bom lines:', len(rows), 'placements:', n)
 

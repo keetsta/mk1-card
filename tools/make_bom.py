@@ -29,7 +29,6 @@ HEAD = ['#', 'Designators', 'Qty / board', 'Qty total', 'Side', 'Description', '
         'LCSC #', 'Substitute allowed', 'Notes']
 WIDTH = [4, 30, 11, 10, 8, 46, 22, 26, 11, 44, 40]
 NOTES = {
-    'C42411119': 'limited stock worldwide, please reserve',
     'C25100': 'any 27 ohm 0402 is fine, no need for a full reel',
 }
 
