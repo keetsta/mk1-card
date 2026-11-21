@@ -13,3 +13,6 @@ __pycache__/
 
 # fab/card-gerbers.zip holds the same files
 fab/gerbers/
+
+# local notes, not published
+CLAUDE.local.md
