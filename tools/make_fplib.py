@@ -17,6 +17,9 @@ M3D = '${KICAD9_3DMODEL_DIR}/'
 RPI = {
     # KiCad ships no QFN-60 model; the 7 x 7 mm QFN-56 body looks the same in a render
     'U1': ('RPi_rp2350a_vias', 'Package_DFN_QFN.3dshapes/QFN-56-1EP_7x7mm_P0.4mm_EP3.2x3.2mm.wrl'),
+    # L1 and the buzzer below are no longer on the board but stay in the library: KiCad parses the whole
+    # library when build_pcb.py loads a footprint, every parsed footprint draws from the seeded UUID
+    # generator, and dropping one shifts the UUIDs, the save order and with it the routing.
     'L1': ('RPi_aota-b201610s3r3-101-t', 'Inductor_SMD.3dshapes/L_0805_2012Metric.wrl'),
     'C6': ('RPi_capc1005x50_wide', 'Capacitor_SMD.3dshapes/C_0402_1005Metric.wrl'),
     'C11': ('RPi_capc1005x50', 'Capacitor_SMD.3dshapes/C_0402_1005Metric.wrl'),
